@@ -2,9 +2,30 @@ state("DOOMTheDarkAges") {}
 
 startup
 {
-    Assembly.Load(File.ReadAllBytes("Components/asl-help")).CreateInstance("Basic");
+	vars.ScriptVersion = "2026-07-27a";
+	
+	string comp = System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "Components");
+    Assembly.Load(File.ReadAllBytes(System.IO.Path.Combine(comp, "asl-help"))).CreateInstance("Basic");
     vars.Helper.GameName = "DOOM: The Dark Ages";
-    vars.Helper.Settings.CreateFromXml("Components/DoomTheDarkAges.Settings.xml");
+	vars.Helper.Settings.CreateFromXml(System.IO.Path.Combine(comp, "DoomTheDarkAges.Settings.xml"));
+	
+	vars.arenaStats = new int[3];	// 0 = raw sig hits, 1 = passed filters, 2 = scan count
+	vars.arenaSlot = new IntPtr[1];
+	vars.arenaScanRunning = new bool[1];
+	vars.arenaLastScan = DateTime.MinValue;
+	vars.ArenaSig = "F7 BB AB E7 49 12 AA 19 1C 22 25 D6 53 1F 04 F4";
+	vars.ArenaMap = "game/dlc/m22_master_arenas/m22_master_arenas";
+	
+	vars.LastBossEvent = "(none)";
+	
+	vars.BossMaps = new Dictionary<string, string>{
+		{ "characters/abomination_boss", "game/dlc/m21_argent_dnur/m21_argent_dnur" },
+	};
+	
+	vars.BossPhases = new Dictionary<string, int> {
+		{ "characters/abomination_boss", 2 },
+	};
+	vars.BossBarHides = new Dictionary<string, int>();
 
     vars.ReadString = (Func<IntPtr, string>)(strPtr =>
     {
@@ -40,7 +61,7 @@ startup
 	        var textSetting = textSettings.FirstOrDefault(x => (x.GetType().GetProperty("Text1").GetValue(x, null) as string) == id);
 	        if (textSetting == null)
 	        {
-                var textComponentAssembly = Assembly.LoadFrom("Components\\LiveSplit.Text.dll");
+                var textComponentAssembly = Assembly.LoadFrom(System.IO.Path.Combine(comp, "LiveSplit.Text.dll"));
                 var textComponent = Activator.CreateInstance(textComponentAssembly.GetType("LiveSplit.UI.Components.TextComponent"), timer);
                 timer.Layout.LayoutComponents.Add(new LiveSplit.UI.Components.LayoutComponent("LiveSplit.Text.dll", textComponent as LiveSplit.UI.Components.IComponent));
 
@@ -80,6 +101,7 @@ startup
         { "eol__maps/game/sp/m12_argent_ret_name",       "chapter__resurrection" },
         { "eol__maps/game/sp/m13_final_battle_name",     "chapter__final_battle" },
         { "boss__characters/ahzrak_prince",              "chapter__reckoning" },
+		{ "boss__characters/abomination_boss", "dlc__henchman" },
 
         // Quests
         { "quests_134_0", "quests_cte_rv" },
@@ -113,7 +135,22 @@ startup
 }
 
 init
-{
+{	
+	vars.Log("=> Revelations v" + vars.ScriptVersion);
+	vars.Log("=> LiveSplit is " + (IntPtr.Size == 8 ? "64-bit" : "32-BIT (PROBLEM)"));
+	try {
+		vars.Log("=> Game module: " + game.MainModule.FileName
+			   + " size=0x" + game.MainModule.ModuleMemorySize.ToString("X"));
+	} catch (Exception e) {
+		vars.Log("=> CANNOT READ GAME MODULE (elevation or bitness): " + e.Message);
+	}
+	
+	foreach (var key in new[] { "dlc__finale", "dlc__purgatory", "dlc__henchman", "dlc_debug" })
+	{
+		if (!settings.ContainsKey(key))
+			vars.Log("WARNING: settings XML is outdated - missing '" + key + "'");
+	}
+	
     #region settings helpers
     vars.Setting = (Func<string, bool>)(criteria =>
     {
@@ -606,40 +643,39 @@ init
             vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "state") // idGameSystemLocal::state_t
         );
         vars.Helper["map"] = vars.Helper.MakeString(
-            vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x20, // idStrStatic < 1024 > mapName (does not show up in dumps)
-            0x0
-        );
+			vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
+			0x20, // idStrStatic < 1024 > mapName (does not show up in dumps)
+			0x0
+		);
 
-        // the idPlayer was pointer scanned for, and walked back - we don't have type information for
+        // OUTDATED NOTE: the idPlayer was pointer scanned for, and walked back - we don't have type information for
         //   idMapInstance, nor whatever the class is at 0x1988
+		// 
+		// idPlayer's offset within idMapInstance is 0x1648
         vars.Helper["playerVelX"] = vars.Helper.Make<float>(
-            vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x1988, // ??
-            0xC0,   // an idPlayer
-            GetOffset("idPlayer", "idPlayerPhysicsInfo"), // idPlayerPhysicsInfo
-            GetOffset("idPlayerPhysicsInfo", "current") // playerPState_t
-            + GetOffset("playerPState_t", "velocity") // idVec3 velocity
-            + GetOffset("idVec3", "x") // float x
-        );
+			vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                                       // idPlayer is offset from mapInstance by 0x1648
+			GetOffset("idPlayer", "idPlayerPhysicsInfo"), // idPlayerPhysicsInfo
+			GetOffset("idPlayerPhysicsInfo", "current")   // playerPState_t
+			+ GetOffset("playerPState_t", "velocity")     // idVec3 velocity
+			+ GetOffset("idVec3", "x")					  // float x
+		);
         vars.Helper["playerVelY"] = vars.Helper.Make<float>(
-            vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x1988, // ??
-            0xC0,   // an idPlayer
-            GetOffset("idPlayer", "idPlayerPhysicsInfo"), // idPlayerPhysicsInfo
-            GetOffset("idPlayerPhysicsInfo", "current") // playerPState_t
-            + GetOffset("playerPState_t", "velocity") // idVec3
-            + GetOffset("idVec3", "y") // float
-        );
+			vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                                       // idPlayer is offset from mapInstance by 0x1648
+			GetOffset("idPlayer", "idPlayerPhysicsInfo"), // idPlayerPhysicsInfo
+			GetOffset("idPlayerPhysicsInfo", "current")   // playerPState_t
+			+ GetOffset("playerPState_t", "velocity")     // idVec3
+			+ GetOffset("idVec3", "y")                    // float y
+		);
         vars.Helper["playerVelZ"] = vars.Helper.Make<float>(
-            vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x1988, // ??
-            0xC0,   // an idPlayer
-            GetOffset("idPlayer", "idPlayerPhysicsInfo"), // idPlayerPhysicsInfo
-            GetOffset("idPlayerPhysicsInfo", "current") // playerPState_t
-            + GetOffset("playerPState_t", "velocity") // idVec3
-            + GetOffset("idVec3", "z") // float
-        );
+			vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                                       // idPlayer is offset from mapInstance by 0x1648
+			GetOffset("idPlayer", "idPlayerPhysicsInfo"), // idPlayerPhysicsInfo
+			GetOffset("idPlayerPhysicsInfo", "current")   // playerPState_t
+			+ GetOffset("playerPState_t", "velocity")     // idVec3
+			+ GetOffset("idVec3", "z")                    // float z
+		);
 
         // shrug
         var TOLERANCE = 0.05;
@@ -651,30 +687,24 @@ init
         });
 
         #region Menus
-        vars.Helper["hudMenus"] = vars.Helper.Make<IntPtr>(
-            vars.idGameSystemLocal
-             + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x1988, // ??
-            0xC0, // an idPlayer
-            GetOffset("idPlayer", "playerHud") // idHUD
-            + GetOffset("idHUD", "menus") // idList < idMenu* >
-        );
+		vars.Helper["hudMenus"] = vars.Helper.Make<IntPtr>(
+			vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                                       // idPlayer is offset from mapInstance by 0x1648
+			GetOffset("idPlayer", "playerHud") // idHUD
+			+ GetOffset("idHUD", "menus") // idList < idMenu* >
+		);
         vars.Helper["hudMenusSize"] = vars.Helper.Make<int>(
-            vars.idGameSystemLocal
-             + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x1988, // ??
-            0xC0, // an idPlayer
-            GetOffset("idPlayer", "playerHud") // idHUD
-            + GetOffset("idHUD", "menus") // idList < idMenu* >
-            + 0x8
-        );
+			vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                                       // idPlayer is offset from mapInstance by 0x1648
+			GetOffset("idPlayer", "playerHud") // idHUD
+			+ GetOffset("idHUD", "menus") // idList < idMenu* >
+			+ 0x8
+		);
 
         // only defined when we're in the end of level screen
         vars.Helper["eolChapterName"] = vars.Helper.MakeString(
-            vars.idGameSystemLocal
-            + 0x48, // idMapInstance mapInstance
-            0x1988,  // ??
-            0xC0,    // an idPlayer
+            vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                                       // idPlayer is offset from mapInstance by 0x1648
             GetOffset("idPlayer", "playerHud") // idHUD
             + GetOffset("idHUD", "menus"), // idList < idMenu* >
             0x8 * 2, // [2] ("playermenu")
@@ -698,10 +728,8 @@ init
 
         // Jesus Fucking Christ
         vars.Helper["bossHealthBarShown"] = vars.Helper.Make<bool>(
-            vars.idGameSystemLocal
-            + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x1988,  // ??
-            0xC0,    // an idPlayer
+            vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                                       // idPlayer is offset from mapInstance by 0x1648
             GetOffset("idPlayer", "playerHud") // idHUD
             + GetOffset("idHUD", "elements")   // idGrowableList < idHUDElement * >
             + 0x0,   // idHUDElement list
@@ -713,7 +741,7 @@ init
             // Okay breathe for a moment
             GetOffset("idUIWidget", "children") // idList < idSharedPtr < idUIWidget > >
             + 0x0,   // idSharedPtr < idUIWidget > list
-            0x8 * 7  // [7] ("ui/screens/hud_screen_boss_health")
+            0x8 * 8  // [8] ("ui/screens/hud_screen_boss_health")  (was 7 before)
             + 0x0,   // idSharedPtrData data
             0x8,     // interlockedPointer_t < void > pointer
 
@@ -733,10 +761,8 @@ init
         );
 
         vars.Helper["bossHealth"] = vars.Helper.Make<float>(
-            vars.idGameSystemLocal
-            + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x1988,  // ??
-            0xC0,    // an idPlayer
+            vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                            // idPlayer is offset from mapInstance by 0x1648
             GetOffset("idPlayer", "playerHud") // idHUD
             + GetOffset("idHUD", "elements")   // idGrowableList < idHUDElement * >
             + 0x0,   // idHUDElement list
@@ -748,7 +774,7 @@ init
             // Okay breathe for a moment
             GetOffset("idUIWidget", "children") // idList < idSharedPtr < idUIWidget > >
             + 0x0,   // idSharedPtr < idUIWidget > list
-            0x8 * 7  // [7] ("ui/screens/hud_screen_boss_health")
+            0x8 * 8  // [8] ("ui/screens/hud_screen_boss_health")  (was 7 before)
             + 0x0,   // idSharedPtrData data
             0x8,     // interlockedPointer_t < void > pointer
 
@@ -764,15 +790,13 @@ init
             GetOffset("idUIWidgetModelInterface", "model") // idSharedPtr < idUIWidgetModel > (idUIWidgetModel_Hud_Boss_HealthBar)
             + 0x0,   // idSharedPtrData data
             0x8,     // interlockedPointer_t < void > pointer
-            GetOffset("idUIWidgetModel_Hud_Boss_HealthBar", "isShown") // float
+            GetOffset("idUIWidgetModel_Hud_Boss_HealthBar", "currentHealth") // float
         );
 
         // idGameSystemLocal.??.player.playerHud.elements[2].children[7].children[0].children[4].model.text.key
         vars.Helper["bossName"] = vars.Helper.MakeString(
-            vars.idGameSystemLocal
-            + GetOffset("idGameSystemLocal", "mapInstance"), // idMapInstance
-            0x1988,  // ??
-            0xC0,    // an idPlayer
+            vars.idGameSystemLocal + GetOffset("idGameSystemLocal", "mapInstance"), 
+			0x1648,                            // idPlayer is offset from mapInstance by 0x1648
             GetOffset("idPlayer", "playerHud") // idHUD
             + GetOffset("idHUD", "elements")   // idGrowableList < idHUDElement * >
             + 0x0,   // idHUDElement list
@@ -784,7 +808,7 @@ init
             // Okay breathe for a moment
             GetOffset("idUIWidget", "children") // idList < idSharedPtr < idUIWidget > >
             + 0x0,   // idSharedPtr < idUIWidget > list
-            0x8 * 7  // [7] ("ui/screens/hud_screen_boss_health")
+            0x8 * 8  // [8] ("ui/screens/hud_screen_boss_health")  (was 7 before)
             + 0x0,   // idSharedPtrData data
             0x8,     // interlockedPointer_t < void > pointer
 
@@ -811,7 +835,7 @@ init
             0x0
         );
         vars.Helper["bossName"].FailAction = MemoryWatcher.ReadFailAction.SetZeroOrNull;
-
+		
         vars.GetActiveScreens = (Func<HashSet<string>>)(() => {
             var ret = new HashSet<string>();
 
@@ -836,6 +860,7 @@ init
         });
         #endregion
 
+		// questSystem is no longer accessible from idGameSystemLocal, so this part isn't working
         #region Quests
         vars.Helper["quests"] = vars.Helper.Make<IntPtr>(
             vars.idGameSystemLocal
@@ -891,6 +916,19 @@ init
                 vars.Log("quest " + i + " " + questName + " is in status " + questStatus + " (0x" + (current.quests + i * QUEST_SIZE).ToString("X") + ")");
             }
         });
+		
+		vars.DumpAllQuestProgress = (Action)(() =>
+		{
+			for (var q = 0; q < current.questsSize; q++)
+			{
+				var name = vars.ReadQuestName(q);
+				for (var s = 0; s < 8; s++) // pad past real step count, harmless if OOB reads garbage/0
+				{
+					var progress = vars.ReadQuestStepProgress(q, s);
+					vars.Log("quest " + q + " (" + name + ") step " + s + " = " + progress);
+				}
+			}
+		});
 
         vars.Log("  => Loading complete!");
         vars.finishedLoading = true;
@@ -903,6 +941,11 @@ init
     // we do some loading in another thread to unblock the main thread and keep LS responsive -
     // we need to, however, block the ASL from attempting to do anything until that loading is done.
     vars.finishedLoading = false;
+	
+	((IntPtr[])vars.arenaSlot)[0] = IntPtr.Zero;
+	((bool[])vars.arenaScanRunning)[0] = false;
+	var st = (int[])vars.arenaStats; st[0] = 0; st[1] = 0; st[2] = 0;
+	vars.arenaLastScan = DateTime.MinValue;
 }
 
 update
@@ -937,6 +980,29 @@ update
     vars.Watch(old, current, "bossName");
     vars.Watch(old, current, "bossHealthBarShown");
     vars.Watch(old, current, "hasTimerStartedInThisLoadYet");
+	
+	current.activeScreens = string.Join(",", vars.GetActiveScreens());
+	vars.Watch(old, current, "activeScreens");
+	
+	if(vars.Setting("dlc_debug"))
+	{
+		var arena_slot = (IntPtr[])vars.arenaSlot;
+		var arena_stats   = (int[])vars.arenaStats;
+		var arena_running = (bool[])vars.arenaScanRunning;
+		
+		string arena = arena_slot[0] == IntPtr.Zero
+			? (arena_running[0] ? "scanning..." : "NOT_FOUND")
+			: "count=" + current.arenaCount;
+			
+		vars.SetTextComponent("Script ver", vars.ScriptVersion);
+		vars.SetTextComponent("Arena rec", arena
+			+ " hits=" + arena_stats[0] + " ok=" + arena_stats[1] + " scans=" + arena_stats[2]);
+		vars.SetTextComponent("Settings",
+			"finale=" + (vars.Setting("dlc__finale")    ? "ON" : "OFF") +
+			" purg="  + (vars.Setting("dlc__purgatory") ? "ON" : "OFF") +
+			" hench=" + (vars.Setting("dlc__henchman")  ? "ON" : "OFF"));
+		vars.SetTextComponent("Last boss", vars.LastBossEvent);
+	}
 
     if(settings["Loading"])
     {
@@ -973,6 +1039,77 @@ update
     {
         vars.SetTextComponent("Boss Healthbar Shown ", current.bossHealthBarShown.ToString());
     }
+	
+	// This part of the code scans for the master arena counter
+	var slot = (IntPtr[])vars.arenaSlot;
+	var stats   = (int[])vars.arenaStats;
+	var running = (bool[])vars.arenaScanRunning;
+
+	// Validate the cached address every tick: the two hash qwords must still be there.
+	if (slot[0] != IntPtr.Zero)
+	{
+		ulong h1, h2;
+		if (!game.ReadValue<ulong>(IntPtr.Subtract(slot[0], 0x28), out h1)
+			|| !game.ReadValue<ulong>(IntPtr.Subtract(slot[0], 0x20), out h2)
+			|| h1 != 0x19AA1249E7ABBBF7UL || h2 != 0xF4041F53D625221CUL)
+		{
+			slot[0] = IntPtr.Zero;
+		}
+	}
+
+	// Rescan when we have nothing valid (rate-limited to once every 10s).
+	if (slot[0] == IntPtr.Zero && !running[0]
+		&& (DateTime.UtcNow - (DateTime)vars.arenaLastScan).TotalSeconds > 10)
+	{
+		running[0] = true;
+		vars.arenaLastScan = DateTime.UtcNow;
+		var proc = game;
+		var sig = (string)vars.ArenaSig;
+		bool full = vars.Setting("dlc_debug");
+
+		new System.Threading.Thread(() =>
+		{
+			int hits = 0, passed = 0;
+			IntPtr chosen = IntPtr.Zero;
+			try
+			{
+				var target = new SigScanTarget(sig);
+				
+				foreach (var page in proc.MemoryPages(true))
+				{
+					if (page.Type != MemPageType.MEM_PRIVATE) continue;
+					if (page.Protect != MemPageProtect.PAGE_READWRITE) continue;
+
+					var scanner = new SignatureScanner(proc, page.BaseAddress, (int)page.RegionSize);
+					foreach (var hit in scanner.ScanAll(target))
+					{	
+						// hit == record + 0x10
+						hits++;
+						int count; ulong z1, z2;
+						if (!proc.ReadValue<int>(IntPtr.Add(hit, 0x28), out count)) continue;
+						if (count < 0 || count > 4) continue;
+						if (!proc.ReadValue<ulong>(IntPtr.Add(hit, 0x10), out z1)) continue;
+						if (!proc.ReadValue<ulong>(IntPtr.Add(hit, 0x18), out z2)) continue;
+						if (z1 != 0 || z2 != 0) continue;
+						
+						passed++;
+						if (chosen == IntPtr.Zero) chosen = IntPtr.Add(hit, 0x28);
+						if (!full) break;
+					}
+					if (chosen != IntPtr.Zero && !full) break;
+				}
+			}
+			catch { }
+			
+			stats[0] = hits;
+			stats[1] = passed;
+			stats[2]++;
+			slot[0] = chosen;
+			running[0] = false;
+		}) { IsBackground = true }.Start();
+	}
+
+	current.arenaCount = slot[0] != IntPtr.Zero ? vars.Helper.Read<int>(slot[0]) : -1;
 }
 
 onStart
@@ -983,6 +1120,8 @@ onStart
     // refresh all splits when we start the run, none are yet completed
     vars.CompletedSplits.Clear();
     vars.CompletedQuests.Clear();
+	vars.BossBarHides.Clear();
+	vars.LastBossEvent = "(none)";
 
     // vars.LogAllQuests();
     // vars.DumpLiterallyEverything();
@@ -1022,10 +1161,12 @@ start
     ) {
         return true;
     }
+	
+	bool isStartingMap = current.activeMap == "game/sp/m1_intro/m1_intro" || current.activeMap == "game/dlc/m16_upper_hell/m16_upper_hell";
 
     // first split
     return !current.hasTimerStartedInThisLoadYet
-        && current.activeMap == "game/sp/m1_intro/m1_intro"
+        && isStartingMap
         && !vars.PlayerIsMoving(old)
         && vars.PlayerIsMoving(current);
 }
@@ -1073,19 +1214,45 @@ split
     }
 
     if (old.eolChapterName != current.eolChapterName) {
-        vars.Log("is it open?" + current.isInEndOfLevelScreen + " (" + old.isInEndOfLevelScreen + ")");
+		vars.Log("is it open?" + current.isInEndOfLevelScreen + " (" + old.isInEndOfLevelScreen + ")");
         return vars.CheckSplit("eol__" + current.eolChapterName, "");
     }
+	
+	// Implemented phase counter because the Henchman has 2 phases in Uprising (+1 in Proving Grounds but ignored)
+	if (old.bossHealthBarShown && !current.bossHealthBarShown) {
+		string bossName = current.bossName ?? "";
+		if (bossName == "") return false;   		// widget torn down (death/teardown), not a real phase end
+		if (vars.BossMaps.ContainsKey(bossName) && current.activeMap != vars.BossMaps[bossName])
+		{
+			vars.LastBossEvent = bossName + " ignored (wrong map)";
+			return false;
+		}
+		int seen;
+		vars.BossBarHides.TryGetValue(bossName, out seen);
+		seen++;
+		vars.BossBarHides[bossName] = seen;
 
-    if (old.bossHealthBarShown && !current.bossHealthBarShown) {
-        vars.Log("guy: " + current.bossName);
-        return vars.CheckSplit("boss__" + current.bossName, "");
-    }
+		int required = vars.BossPhases.ContainsKey(bossName) ? vars.BossPhases[bossName] : 1;
+		vars.LastBossEvent = bossName + " " + seen + "/" + required;
+		vars.Log("boss bar hidden: " + bossName + " (" + seen + "/" + required + ") health=" + old.bossHealth);
+
+		if (seen >= required) {
+			return vars.CheckSplit("boss__" + bossName, "");
+		}
+		return false;
+	}
 
 	if (current.activeMap != old.activeMap && current.activeMap == "game/dlc/m15_hub/m15_hub") {
 		vars.Log("Split on entering Purgatory");
-        return true;
+        return vars.Setting("dlc__purgatory");
     }
+	
+	if (current.arenaCount == 4 && old.arenaCount >= 0 && old.arenaCount < 4
+		&& current.activeMap == vars.ArenaMap)
+	{
+		vars.Log("All 4 master arenas cleared. Triggering final split.");
+		return vars.CheckSplit("dlc__finale", "");
+	}
 }
 
 reset
@@ -1111,4 +1278,6 @@ reset
 exit
 {
     timer.IsGameTimePaused = true;
+	vars.BossBarHides.Clear();
+	vars.LastBossEvent = "(none)";
 }
