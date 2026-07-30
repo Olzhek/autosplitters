@@ -25,6 +25,11 @@
         <Setting Id="chapter__final_battle" Label="21: Final Battle" State="true" />
         <Setting Id="chapter__reckoning"    Label="22: Reckoning" State="true" />
     </Setting>
+	<Setting Id="dlc" Label="Revelations (DLC)" State="true">
+		<Setting Id="dlc__purgatory" Label="Returning to Purgatory (after each level)" State="true" />
+		<Setting Id="dlc__henchman"  Label="Killing The Henchman (for runs ending at Uprising)" State="false" />
+		<Setting Id="dlc__finale"    Label="Endgame: all 4 Master Arenas cleared" State="true" />
+	</Setting>
     <Setting Id="quests" Label="Split on completing a quest" State="false">
         <Setting Id="note" Label="HEY: There are too many quests to list here. Please ping @diggitydingdong if you'd like a specific quest to be added here." State="false" />
         <Setting Id="quests_khalim" Label="Quests in 1: Village of Khalim" State="false">
@@ -688,6 +693,7 @@
         <Setting Id="boss_name" Label="Boss Name" State="false" />
         <Setting Id="boss_health" Label="Boss Health" State="false" />
         <Setting Id="boss_bar_shown" Label="Boss Health Bar Shown" State="false" />
+		<Setting Id="dlc_debug" Label="DLC Diagnostics" State="false" />
     </Setting>
     <Setting Id="experiments" Label="Experimental features, don't use unless you know what you're doing" State="false">
     </Setting>
